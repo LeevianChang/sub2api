@@ -16,7 +16,9 @@ services:
   # Sub2API Application
   # ===========================================================================
   sub2api:
-    image: weishaw/sub2api:latest
+    build:
+      context: https://github.com/LeevianChang/sub2api.git#master
+      dockerfile: Dockerfile
     container_name: sub2api
     restart: unless-stopped
     ulimits:

@@ -24,7 +24,9 @@ services:
   # Sub2API Application
   # ===========================================================================
   sub2api:
-    image: weishaw/sub2api:latest
+    build:
+      context: ..
+      dockerfile: Dockerfile
     container_name: sub2api
     restart: unless-stopped
     ulimits:
@@ -154,7 +156,7 @@ services:
     networks:
       - sub2api-network
     healthcheck:
-      test: ["CMD", "wget", "-q", "-T", "5", "-O", "/dev/null", "http://localhost:8080/health"]
+      test: [ "CMD", "wget", "-q", "-T", "5", "-O", "/dev/null", "http://localhost:8080/health" ]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -183,7 +185,7 @@ services:
     networks:
       - sub2api-network
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-sub2api} -d ${POSTGRES_DB:-sub2api}"]
+      test: [ "CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-sub2api} -d ${POSTGRES_DB:-sub2api}" ]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -191,9 +193,9 @@ services:
     # 注意：不暴露端口到宿主机，应用通过内部网络连接
     # 如需调试，可临时添加：ports: ["127.0.0.1:5433:5432"]
 
-  # ===========================================================================
-  # Redis Cache
-  # ===========================================================================
+    # ===========================================================================
+    # Redis Cache
+    # ===========================================================================
   redis:
     image: redis:8-alpine
     container_name: sub2api-redis
@@ -206,12 +208,12 @@ services:
       # Local directory mapping for easy migration
       - ./redis_data:/data
     command: >
-        sh -c '
-          redis-server
-          --save 60 1
-          --appendonly yes
-          --appendfsync everysec
-          ${REDIS_PASSWORD:+--requirepass "$REDIS_PASSWORD"}'
+      sh -c '
+        redis-server
+        --save 60 1
+        --appendonly yes
+        --appendfsync everysec
+        ${REDIS_PASSWORD:+--requirepass "$REDIS_PASSWORD"}'
     environment:
       - TZ=${TZ:-Asia/Shanghai}
       # REDISCLI_AUTH is used by redis-cli for authentication (safer than -a flag)
@@ -219,7 +221,7 @@ services:
     networks:
       - sub2api-network
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: [ "CMD", "redis-cli", "ping" ]
       interval: 10s
       timeout: 5s
       retries: 5
