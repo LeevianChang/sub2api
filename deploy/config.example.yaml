@@ -391,6 +391,39 @@ gateway:
     # Max image requests waiting in this process when overflow_mode=wait, 0=unlimited
     # wait 模式当前进程允许排队等待的图片请求数，0=不限制
     max_waiting_requests: 100
+    # Retry-After seconds returned when image concurrency is full
+    # 图片并发满载时返回给调用方的建议重试等待秒数
+    retry_after_seconds: 5
+  # Image result storage; uploads non-stream image results to R2/R3 and rewrites response URLs
+  # 图片结果存储；将非流式图片生成结果上传到 R2/R3，并把响应中的图片替换为公网 URL
+  image_result_storage:
+    # Enable image result upload and URL rewriting; false keeps existing response unchanged
+    # 是否启用图片结果上传与 URL 替换；false 保持现有响应不变
+    enabled: false
+    # Cloudflare account ID for R2 S3 API endpoint
+    # Cloudflare 账号 ID，用于拼接 R2 S3 API endpoint
+    account_id: ""
+    # R2 API Token Access Key ID with object write permission
+    # R2 API Token 的 Access Key ID，需要具备对象写入权限
+    access_key_id: ""
+    # R2 API Token Secret Access Key
+    # R2 API Token 的 Secret Access Key
+    secret_access_key: ""
+    # R2 bucket name for generated image results
+    # R2 bucket 名称，用于存放生成后的图片结果
+    bucket: ""
+    # Public base URL for uploaded objects; must be reachable by clients
+    # 上传对象公网访问基础地址，必须能被客户端访问
+    public_base_url: ""
+    # Object key prefix; configure R2 lifecycle deletion with the same prefix if needed
+    # 上传对象前缀；如需自动清理，建议在 R2 Lifecycle 中按此前缀配置删除规则
+    object_prefix: "image-results"
+    # Result image validity seconds; metadata only, actual deletion depends on R2 lifecycle
+    # 结果图有效时间（秒）；仅写入响应元数据，实际删除依赖 R2 lifecycle，默认 7 天
+    expire_seconds: 604800
+    # Debug memory snapshot logs for split storage uploads; Prometheus metrics are always kept
+    # 调试开关：打印图片拆分存储过程的内存快照日志；Prometheus 指标不受影响
+    debug_memory_snapshots: false
   # SSE max line size in bytes (default: 40MB)
   # SSE 单行最大字节数（默认 40MB）
   max_line_size: 41943040

@@ -1,0 +1,30 @@
+{
+  "annotations": {"list": []},
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 0,
+  "id": null,
+  "links": [],
+  "liveNow": false,
+  "panels": [
+    {"datasource": {"type": "prometheus", "uid": "Prometheus"}, "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}]}, "unit": "short"}, "overrides": []}, "gridPos": {"h": 4, "w": 6, "x": 0, "y": 0}, "id": 1, "options": {"colorMode": "value", "graphMode": "area", "justifyMode": "auto", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "auto"}, "targets": [{"expr": "sub2api_image_generation_active_requests", "legendFormat": "active requests", "refId": "A"}], "title": "Active Image Requests", "type": "stat"},
+    {"datasource": {"type": "prometheus", "uid": "Prometheus"}, "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}]}, "unit": "short"}, "overrides": []}, "gridPos": {"h": 4, "w": 6, "x": 6, "y": 0}, "id": 2, "options": {"colorMode": "value", "graphMode": "area", "justifyMode": "auto", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "auto"}, "targets": [{"expr": "sub2api_image_generation_active_images_requested", "legendFormat": "active images", "refId": "A"}], "title": "Active Requested Images", "type": "stat"},
+    {"datasource": {"type": "prometheus", "uid": "Prometheus"}, "fieldConfig": {"defaults": {"unit": "reqps"}, "overrides": []}, "gridPos": {"h": 8, "w": 12, "x": 0, "y": 4}, "id": 3, "options": {"legend": {"calcs": [], "displayMode": "list", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "single", "sort": "none"}}, "targets": [{"expr": "rate(sub2api_image_generation_requests_total[5m])", "legendFormat": "requests/s", "refId": "A"}, {"expr": "rate(sub2api_image_generation_errors_total[5m])", "legendFormat": "errors/s", "refId": "B"}], "title": "Image Request Rate", "type": "timeseries"},
+    {"datasource": {"type": "prometheus", "uid": "Prometheus"}, "fieldConfig": {"defaults": {"unit": "short"}, "overrides": []}, "gridPos": {"h": 8, "w": 12, "x": 12, "y": 4}, "id": 4, "options": {"legend": {"calcs": [], "displayMode": "list", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "single", "sort": "none"}}, "targets": [{"expr": "increase(sub2api_image_generation_images_requested_total[1h])", "legendFormat": "requested images", "refId": "A"}, {"expr": "increase(sub2api_image_generation_images_completed_total[1h])", "legendFormat": "completed images", "refId": "B"}, {"expr": "increase(sub2api_image_generation_split_storage_images_total[1h])", "legendFormat": "split storage images", "refId": "C"}], "title": "Images Per Hour", "type": "timeseries"},
+    {"datasource": {"type": "prometheus", "uid": "Prometheus"}, "fieldConfig": {"defaults": {"unit": "s"}, "overrides": []}, "gridPos": {"h": 8, "w": 12, "x": 0, "y": 12}, "id": 5, "options": {"legend": {"calcs": [], "displayMode": "list", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "single", "sort": "none"}}, "targets": [{"expr": "rate(sub2api_image_generation_single_image_duration_seconds_sum[5m]) / clamp_min(rate(sub2api_image_generation_single_image_duration_seconds_count[5m]), 0.001)", "legendFormat": "avg", "refId": "A"}, {"expr": "histogram_quantile(0.90, rate(sub2api_image_generation_single_image_duration_seconds_bucket[5m]))", "legendFormat": "p90", "refId": "B"}, {"expr": "histogram_quantile(0.99, rate(sub2api_image_generation_single_image_duration_seconds_bucket[5m]))", "legendFormat": "p99", "refId": "C"}], "title": "Single Image Duration Avg / P90 / P99", "type": "timeseries"},
+    {"datasource": {"type": "prometheus", "uid": "Prometheus"}, "fieldConfig": {"defaults": {"unit": "bytes"}, "overrides": []}, "gridPos": {"h": 8, "w": 12, "x": 12, "y": 12}, "id": 6, "options": {"legend": {"calcs": [], "displayMode": "list", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "single", "sort": "none"}}, "targets": [{"expr": "sub2api_process_memory_alloc_bytes", "legendFormat": "alloc", "refId": "A"}, {"expr": "sub2api_process_memory_heap_inuse_bytes", "legendFormat": "heap inuse", "refId": "B"}, {"expr": "sub2api_process_memory_sys_bytes", "legendFormat": "sys", "refId": "C"}], "title": "Go Memory", "type": "timeseries"},
+    {"datasource": {"type": "prometheus", "uid": "Prometheus"}, "fieldConfig": {"defaults": {"unit": "ops"}, "overrides": []}, "gridPos": {"h": 8, "w": 12, "x": 0, "y": 20}, "id": 7, "options": {"legend": {"calcs": [], "displayMode": "list", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "single", "sort": "none"}}, "targets": [{"expr": "increase(sub2api_process_memory_gc_total[5m])", "legendFormat": "GC cycles", "refId": "A"}], "title": "GC Cycles", "type": "timeseries"}
+  ],
+  "refresh": "15s",
+  "schemaVersion": 39,
+  "style": "dark",
+  "tags": ["sub2api", "image-generation"],
+  "templating": {"list": []},
+  "time": {"from": "now-6h", "to": "now"},
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "Sub2API Image Generation",
+  "uid": "sub2api-image-generation",
+  "version": 1,
+  "weekStart": ""
+}

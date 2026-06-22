@@ -61,6 +61,10 @@ func SetupRouter(
 		return nil
 	}))
 
+	// Register common endpoints before the frontend fallback middleware so
+	// machine-readable endpoints such as /metrics are not served as HTML.
+	routes.RegisterCommonRoutes(r)
+
 	// Serve embedded frontend with settings injection if available
 	if web.HasEmbeddedFrontend() {
 		frontendServer, err := web.NewFrontendServer(settingService)
@@ -100,9 +104,6 @@ func registerRoutes(
 	cfg *config.Config,
 	redisClient *redis.Client,
 ) {
-	// 通用路由（健康检查、状态等）
-	routes.RegisterCommonRoutes(r)
-
 	// API v1
 	v1 := r.Group("/api/v1")
 

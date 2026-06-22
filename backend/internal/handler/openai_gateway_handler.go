@@ -1773,7 +1773,16 @@ func (h *OpenAIGatewayHandler) acquireImageGenerationSlot(c *gin.Context, stream
 	if acquired {
 		return release, true
 	}
-	h.handleStreamingAwareError(c, http.StatusTooManyRequests, "rate_limit_error", "Image generation concurrency limit exceeded, please retry later", streamStarted)
+	retryAfterSeconds := imageConcurrency.RetryAfterSeconds
+	if retryAfterSeconds > 0 {
+		c.Header("Retry-After", strconv.Itoa(retryAfterSeconds))
+	}
+	h.handleStreamingAwareErrorWithExtra(c, http.StatusTooManyRequests, "rate_limit_error", "Image generation concurrency limit exceeded, please retry later", streamStarted, gin.H{
+		"code":                "no_capacity",
+		"retry_after_seconds": retryAfterSeconds,
+		"running":             imageConcurrency.MaxConcurrentRequests,
+		"max_concurrency":     imageConcurrency.MaxConcurrentRequests,
+	})
 	return nil, false
 }
 
@@ -1851,6 +1860,10 @@ func (h *OpenAIGatewayHandler) mapUpstreamError(statusCode int) (int, string, st
 
 // handleStreamingAwareError handles errors that may occur after streaming has started
 func (h *OpenAIGatewayHandler) handleStreamingAwareError(c *gin.Context, status int, errType, message string, streamStarted bool) {
+	h.handleStreamingAwareErrorWithExtra(c, status, errType, message, streamStarted, nil)
+}
+
+func (h *OpenAIGatewayHandler) handleStreamingAwareErrorWithExtra(c *gin.Context, status int, errType, message string, streamStarted bool, extra gin.H) {
 	if streamStarted {
 		// /v1/responses 的严格 SDK（Codex CLI）要求终止事件必须属于
 		// response.completed/failed/incomplete/cancelled 集合。
@@ -1875,7 +1888,7 @@ func (h *OpenAIGatewayHandler) handleStreamingAwareError(c *gin.Context, status 
 	}
 
 	// Normal case: return JSON response with proper status code
-	h.errorResponse(c, status, errType, message)
+	h.errorResponseWithExtra(c, status, errType, message, extra)
 }
 
 // ensureForwardErrorResponse 在 Forward 返回错误但尚未写响应时补写统一错误响应。
@@ -1944,11 +1957,19 @@ func openAIForwardErrorAlreadyCommunicated(c *gin.Context, writerSizeBeforeForwa
 
 // errorResponse returns OpenAI API format error response
 func (h *OpenAIGatewayHandler) errorResponse(c *gin.Context, status int, errType, message string) {
+	h.errorResponseWithExtra(c, status, errType, message, nil)
+}
+
+func (h *OpenAIGatewayHandler) errorResponseWithExtra(c *gin.Context, status int, errType, message string, extra gin.H) {
+	errorPayload := gin.H{
+		"type":    errType,
+		"message": message,
+	}
+	for key, value := range extra {
+		errorPayload[key] = value
+	}
 	c.JSON(status, gin.H{
-		"error": gin.H{
-			"type":    errType,
-			"message": message,
-		},
+		"error": errorPayload,
 	})
 }
 

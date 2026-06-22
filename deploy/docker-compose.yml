@@ -163,6 +163,16 @@ services:
       - GATEWAY_IMAGE_CONCURRENCY_OVERFLOW_MODE=${GATEWAY_IMAGE_CONCURRENCY_OVERFLOW_MODE:-reject}
       - GATEWAY_IMAGE_CONCURRENCY_WAIT_TIMEOUT_SECONDS=${GATEWAY_IMAGE_CONCURRENCY_WAIT_TIMEOUT_SECONDS:-30}
       - GATEWAY_IMAGE_CONCURRENCY_MAX_WAITING_REQUESTS=${GATEWAY_IMAGE_CONCURRENCY_MAX_WAITING_REQUESTS:-100}
+      - GATEWAY_IMAGE_CONCURRENCY_RETRY_AFTER_SECONDS=${GATEWAY_IMAGE_CONCURRENCY_RETRY_AFTER_SECONDS:-5}
+      - GATEWAY_IMAGE_RESULT_STORAGE_ENABLED=${GATEWAY_IMAGE_RESULT_STORAGE_ENABLED:-false}
+      - GATEWAY_IMAGE_RESULT_STORAGE_ACCOUNT_ID=${GATEWAY_IMAGE_RESULT_STORAGE_ACCOUNT_ID:-}
+      - GATEWAY_IMAGE_RESULT_STORAGE_ACCESS_KEY_ID=${GATEWAY_IMAGE_RESULT_STORAGE_ACCESS_KEY_ID:-}
+      - GATEWAY_IMAGE_RESULT_STORAGE_SECRET_ACCESS_KEY=${GATEWAY_IMAGE_RESULT_STORAGE_SECRET_ACCESS_KEY:-}
+      - GATEWAY_IMAGE_RESULT_STORAGE_BUCKET=${GATEWAY_IMAGE_RESULT_STORAGE_BUCKET:-}
+      - GATEWAY_IMAGE_RESULT_STORAGE_PUBLIC_BASE_URL=${GATEWAY_IMAGE_RESULT_STORAGE_PUBLIC_BASE_URL:-}
+      - GATEWAY_IMAGE_RESULT_STORAGE_OBJECT_PREFIX=${GATEWAY_IMAGE_RESULT_STORAGE_OBJECT_PREFIX:-image-results}
+      - GATEWAY_IMAGE_RESULT_STORAGE_EXPIRE_SECONDS=${GATEWAY_IMAGE_RESULT_STORAGE_EXPIRE_SECONDS:-604800}
+      - GATEWAY_IMAGE_RESULT_STORAGE_DEBUG_MEMORY_SNAPSHOTS=${GATEWAY_IMAGE_RESULT_STORAGE_DEBUG_MEMORY_SNAPSHOTS:-false}
     depends_on:
       postgres:
         condition: service_healthy
@@ -258,6 +268,44 @@ services:
       start_period: 5s
     # 注意：不暴露端口到宿主机，应用通过内部网络连接
     # 如需调试，可临时添加：ports: ["127.0.0.1:6379:6379"]
+
+  prometheus:
+    image: prom/prometheus:v3.7.3
+    container_name: sub2api-prometheus
+    restart: unless-stopped
+    ports:
+      - "${PROMETHEUS_BIND_HOST:-127.0.0.1}:${PROMETHEUS_PORT:-9090}:9090"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --web.enable-lifecycle
+    depends_on:
+      sub2api:
+        condition: service_healthy
+    networks:
+      - sub2api-network
+
+  grafana:
+    image: grafana/grafana:12.3.0
+    container_name: sub2api-grafana
+    restart: unless-stopped
+    ports:
+      - "${GRAFANA_BIND_HOST:-127.0.0.1}:${GRAFANA_PORT:-3000}:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=${GRAFANA_ADMIN_USER:-admin}
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-admin}
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/etc/grafana/dashboards:ro
+    depends_on:
+      - prometheus
+    networks:
+      - sub2api-network
 # =============================================================================
 # Volumes
 # =============================================================================
@@ -267,6 +315,10 @@ volumes:
   postgres_data:
     driver: local
   redis_data:
+    driver: local
+  prometheus_data:
+    driver: local
+  grafana_data:
     driver: local
 
 # =============================================================================

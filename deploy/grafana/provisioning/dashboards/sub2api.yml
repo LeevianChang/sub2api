@@ -1,0 +1,11 @@
+apiVersion: 1
+
+providers:
+  - name: Sub2API
+    orgId: 1
+    folder: Sub2API
+    type: file
+    disableDeletion: false
+    editable: true
+    options:
+      path: /etc/grafana/dashboards

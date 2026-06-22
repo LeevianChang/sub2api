@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"runtime"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -22,6 +24,7 @@ import (
 
 type openAIResponsesImageResult struct {
 	Result        string
+	URL           string
 	RevisedPrompt string
 	OutputFormat  string
 	Size          string
@@ -143,6 +146,9 @@ func openAIImagesUpstreamErrorResponseBody(err *OpenAIImagesUpstreamError) []byt
 func openAIResponsesImageResultKey(itemID string, result openAIResponsesImageResult) string {
 	if strings.TrimSpace(result.Result) != "" {
 		return strings.TrimSpace(result.OutputFormat) + "|" + strings.TrimSpace(result.Result)
+	}
+	if strings.TrimSpace(result.URL) != "" {
+		return "url:" + strings.TrimSpace(result.URL)
 	}
 	return "item:" + strings.TrimSpace(itemID)
 }
@@ -289,6 +295,7 @@ func buildOpenAIImagesStreamCompletedPayload(
 	if img.Size != "" {
 		payload, _ = sjson.SetBytes(payload, "size", img.Size)
 	}
+	payload, _ = sjson.SetBytes(payload, "billing_size", NormalizeImageBillingTierOrDefault(img.Size))
 	if img.Model != "" {
 		payload, _ = sjson.SetBytes(payload, "model", img.Model)
 	}
@@ -296,6 +303,22 @@ func buildOpenAIImagesStreamCompletedPayload(
 		payload, _ = sjson.SetRawBytes(payload, "usage", usageRaw)
 	}
 	return payload
+}
+
+func openAIUsageToRawJSON(usage OpenAIUsage) []byte {
+	out := []byte(`{}`)
+	out, _ = sjson.SetBytes(out, "input_tokens", usage.InputTokens)
+	out, _ = sjson.SetBytes(out, "output_tokens", usage.OutputTokens)
+	if usage.CacheCreationInputTokens > 0 {
+		out, _ = sjson.SetBytes(out, "cache_creation_input_tokens", usage.CacheCreationInputTokens)
+	}
+	if usage.CacheReadInputTokens > 0 {
+		out, _ = sjson.SetBytes(out, "input_tokens_details.cached_tokens", usage.CacheReadInputTokens)
+	}
+	if usage.ImageOutputTokens > 0 {
+		out, _ = sjson.SetBytes(out, "output_tokens_details.image_tokens", usage.ImageOutputTokens)
+	}
+	return out
 }
 
 func openAIImageOutputMIMEType(outputFormat string) string {
@@ -463,7 +486,9 @@ func extractOpenAIImagesFromResponsesCompleted(payload []byte) ([]openAIResponse
 	}
 
 	var usageRaw []byte
-	if usage := gjson.GetBytes(payload, "response.tool_usage.image_gen"); usage.Exists() && usage.IsObject() {
+	if usage := gjson.GetBytes(payload, "response.usage"); usage.Exists() && usage.IsObject() {
+		usageRaw = []byte(usage.Raw)
+	} else if usage := gjson.GetBytes(payload, "response.tool_usage.image_gen"); usage.Exists() && usage.IsObject() {
 		usageRaw = []byte(usage.Raw)
 	}
 	return results, createdAt, usageRaw, firstMeta, nil
@@ -813,7 +838,9 @@ func buildOpenAIImagesAPIResponse(
 	}
 	for _, img := range results {
 		item := []byte(`{}`)
-		if format == "url" {
+		if img.URL != "" {
+			item, _ = sjson.SetBytes(item, "url", img.URL)
+		} else if format == "url" {
 			item, _ = sjson.SetBytes(item, "url", "data:"+openAIImageOutputMIMEType(img.OutputFormat)+";base64,"+img.Result)
 		} else {
 			item, _ = sjson.SetBytes(item, "b64_json", img.Result)
@@ -835,6 +862,7 @@ func buildOpenAIImagesAPIResponse(
 	if firstMeta.Size != "" {
 		out, _ = sjson.SetBytes(out, "size", firstMeta.Size)
 	}
+	out, _ = sjson.SetBytes(out, "billing_size", ResolveImageBillingSize(firstMeta.Size, openAIResponsesImageResultSizes(results)).BillingSize)
 	if firstMeta.Model != "" {
 		out, _ = sjson.SetBytes(out, "model", firstMeta.Model)
 	}
@@ -972,6 +1000,289 @@ func (s *OpenAIGatewayService) handleOpenAIImagesOAuthNonStreamingResponse(
 	responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
 	c.Data(resp.StatusCode, "application/json; charset=utf-8", responseBody)
 	return usage, len(results), openAIResponsesImageResultSizes(results), nil
+}
+
+func (s *OpenAIGatewayService) shouldSplitOpenAIImagesOAuthStorageRequest(parsed *OpenAIImagesRequest) bool {
+	return s != nil && s.cfg != nil && s.cfg.Gateway.ImageResultStorage.Enabled && parsed != nil && !parsed.Stream && parsed.N > 1
+}
+
+func logOpenAIImagesMemorySnapshot(enabled bool, stage string, requestID string, imageIndex int, imageCount int) {
+	if !enabled {
+		return
+	}
+	var mem runtime.MemStats
+	runtime.ReadMemStats(&mem)
+	logger.LegacyPrintf(
+		"service.openai_gateway",
+		"[OpenAI] Images memory snapshot stage=%s request_id=%s image_index=%d image_count=%d alloc_mib=%d heap_alloc_mib=%d heap_inuse_mib=%d sys_mib=%d num_gc=%d",
+		stage,
+		strings.TrimSpace(requestID),
+		imageIndex,
+		imageCount,
+		bytesToMiB(mem.Alloc),
+		bytesToMiB(mem.HeapAlloc),
+		bytesToMiB(mem.HeapInuse),
+		bytesToMiB(mem.Sys),
+		mem.NumGC,
+	)
+}
+
+func bytesToMiB(value uint64) uint64 {
+	return value / (1024 * 1024)
+}
+
+func (s *OpenAIGatewayService) forwardOpenAIImagesOAuthSplitStorage(
+	ctx context.Context,
+	c *gin.Context,
+	account *Account,
+	token string,
+	parsed *OpenAIImagesRequest,
+	requestModel string,
+	startTime time.Time,
+) (*OpenAIForwardResult, error) {
+	if parsed == nil {
+		return nil, fmt.Errorf("parsed images request is required")
+	}
+	storageCfg := s.cfg.Gateway.ImageResultStorage
+	count := parsed.N
+	if count <= 1 {
+		count = 1
+	}
+	RecordImageGenerationSplitStorage(count)
+	clientRequestID := clientRequestIDForLog(c)
+
+	proxyURL := ""
+	if account.ProxyID != nil && account.Proxy != nil {
+		proxyURL = account.Proxy.URL()
+	}
+
+	allResults := make([]openAIResponsesImageResult, 0, count)
+	usage := OpenAIUsage{}
+	var firstMeta openAIResponsesImageResult
+	var createdAt int64
+	responseHeaders := http.Header{}
+	requestID := ""
+	statusCode := http.StatusOK
+	var imageOutputSizes []string
+	writePartialResponse := func(failedIndex int, reason string) (*OpenAIForwardResult, error) {
+		if len(allResults) == 0 {
+			return nil, fmt.Errorf("split image generation failed before any image completed: %s", reason)
+		}
+		RecordImageGenerationPartialSuccess(len(allResults))
+		for skippedIndex := failedIndex + 1; skippedIndex <= count; skippedIndex++ {
+			logger.LegacyPrintf("service.openai_gateway", "[OpenAI] Images split skipped client_request_id=%s upstream_request_id=%s image_index=%d image_count=%d reason=previous_failure", clientRequestID, strings.TrimSpace(requestID), skippedIndex, count)
+		}
+		responseBody, err := buildOpenAIImagesAPIResponse(allResults, createdAt, openAIUsageToRawJSON(usage), firstMeta, "url")
+		if err != nil {
+			return nil, err
+		}
+		responseheaders.WriteFilteredHeaders(c.Writer.Header(), responseHeaders, s.responseHeaderFilter)
+		c.Header("X-Sub2API-Partial-Images", "true")
+		c.Header("X-Sub2API-Requested-Images", strconv.Itoa(count))
+		c.Header("X-Sub2API-Returned-Images", strconv.Itoa(len(allResults)))
+		c.Header("X-Sub2API-Failed-Image-Index", strconv.Itoa(failedIndex))
+		c.Data(http.StatusOK, "application/json; charset=utf-8", responseBody)
+		return &OpenAIForwardResult{
+			RequestID:             requestID,
+			Usage:                 usage,
+			Model:                 requestModel,
+			UpstreamModel:         requestModel,
+			Stream:                false,
+			ResponseHeaders:       responseHeaders,
+			Duration:              time.Since(startTime),
+			ImageCount:            len(allResults),
+			ImageDurationObserved: true,
+			ImageSize:             parsed.SizeTier,
+			ImageInputSize:        parsed.Size,
+			ImageOutputSizes:      imageOutputSizes,
+		}, nil
+	}
+	logOpenAIImagesMemorySnapshot(storageCfg.DebugMemorySnapshots, "split_start", "", 0, count)
+
+	for i := 0; i < count; i++ {
+		imageIndex := i + 1
+		imageStartedAt := time.Now()
+		logger.LegacyPrintf("service.openai_gateway", "[OpenAI] Images split start client_request_id=%s upstream_request_id=%s image_index=%d image_count=%d account_type=%s", clientRequestID, strings.TrimSpace(requestID), imageIndex, count, account.Type)
+		logOpenAIImagesMemorySnapshot(storageCfg.DebugMemorySnapshots, "split_before_upstream", requestID, imageIndex, count)
+		single := *parsed
+		single.N = 1
+		responsesBody, err := buildOpenAIImagesResponsesRequest(&single, requestModel)
+		if err != nil {
+			return nil, err
+		}
+		upstreamReq, err := s.buildUpstreamRequest(ctx, c, account, responsesBody, token, true, single.StickySessionSeed(), false)
+		if err != nil {
+			return nil, err
+		}
+		upstreamReq.Header.Set("Content-Type", "application/json")
+		upstreamReq.Header.Set("Accept", "text/event-stream")
+
+		upstreamStart := time.Now()
+		resp, err := s.httpUpstream.Do(upstreamReq, proxyURL, account.ID, account.Concurrency)
+		SetOpsLatencyMs(c, OpsUpstreamLatencyMsKey, time.Since(upstreamStart).Milliseconds())
+		if err != nil {
+			safeErr := sanitizeUpstreamErrorMessage(err.Error())
+			logger.LegacyPrintf("service.openai_gateway", "[OpenAI] Images split failed client_request_id=%s upstream_request_id=%s image_index=%d image_count=%d kind=request_error message=%s", clientRequestID, strings.TrimSpace(requestID), imageIndex, count, safeErr)
+			if len(allResults) > 0 {
+				return writePartialResponse(imageIndex, safeErr)
+			}
+			setOpsUpstreamError(c, 0, safeErr, "")
+			appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+				Platform:    account.Platform,
+				AccountID:   account.ID,
+				AccountName: account.Name,
+				UpstreamURL: safeUpstreamURL(upstreamReq.URL.String()),
+				Kind:        "request_error",
+				Message:     safeErr,
+			})
+			return nil, fmt.Errorf("upstream request failed: %s", safeErr)
+		}
+
+		if resp.StatusCode >= 400 {
+			upstreamRequestID := upstreamImageRequestIDForLog(resp.Header)
+			respBody := s.readUpstreamErrorBody(resp)
+			_ = resp.Body.Close()
+			resp.Body = io.NopCloser(bytes.NewReader(respBody))
+			upstreamMsg := sanitizeUpstreamErrorMessage(strings.TrimSpace(extractUpstreamErrorMessage(respBody)))
+			logger.LegacyPrintf("service.openai_gateway", "[OpenAI] Images split failed client_request_id=%s upstream_request_id=%s image_index=%d image_count=%d upstream_status=%d message=%s", clientRequestID, upstreamRequestID, imageIndex, count, resp.StatusCode, upstreamMsg)
+			if len(allResults) > 0 {
+				return writePartialResponse(imageIndex, upstreamMsg)
+			}
+			if s.shouldFailoverOpenAIUpstreamResponse(resp.StatusCode, upstreamMsg, respBody) {
+				appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+					Platform:           account.Platform,
+					AccountID:          account.ID,
+					AccountName:        account.Name,
+					UpstreamStatusCode: resp.StatusCode,
+					UpstreamRequestID:  resp.Header.Get("x-request-id"),
+					UpstreamURL:        safeUpstreamURL(upstreamReq.URL.String()),
+					Kind:               "failover",
+					Message:            upstreamMsg,
+				})
+				s.handleFailoverSideEffects(ctx, resp, account, respBody, requestModel)
+				return nil, &UpstreamFailoverError{StatusCode: resp.StatusCode, ResponseBody: respBody, RetryableOnSameAccount: account.IsPoolMode() && account.IsPoolModeRetryableStatus(resp.StatusCode)}
+			}
+			return s.handleOpenAIImagesErrorResponse(ctx, resp, c, account, requestModel)
+		}
+
+		if requestID == "" {
+			requestID = resp.Header.Get("x-request-id")
+		}
+		upstreamRequestID := upstreamImageRequestIDForLog(resp.Header)
+		if len(responseHeaders) == 0 {
+			responseHeaders = resp.Header.Clone()
+			statusCode = resp.StatusCode
+		}
+		body, err := ReadUpstreamResponseBody(resp.Body, s.cfg, c, openAITooLargeError)
+		_ = resp.Body.Close()
+		if err != nil {
+			return nil, err
+		}
+		logOpenAIImagesMemorySnapshot(storageCfg.DebugMemorySnapshots, "split_after_body_read", requestID, imageIndex, count)
+
+		var singleUsage OpenAIUsage
+		forEachOpenAISSEDataPayload(string(body), func(data []byte) {
+			s.parseSSEUsageBytes(data, &singleUsage)
+		})
+		addOpenAIUsage(&usage, singleUsage)
+		results, resultCreatedAt, _, resultFirstMeta, _, err := collectOpenAIImagesFromResponsesBody(body)
+		body = nil
+		if err != nil {
+			logger.LegacyPrintf("service.openai_gateway", "[OpenAI] Images split failed client_request_id=%s upstream_request_id=%s image_index=%d image_count=%d reason=collect_error message=%s", clientRequestID, upstreamRequestID, imageIndex, count, err.Error())
+			if len(allResults) > 0 {
+				return writePartialResponse(imageIndex, err.Error())
+			}
+			return nil, err
+		}
+		if len(results) == 0 {
+			logger.LegacyPrintf("service.openai_gateway", "[OpenAI] Images split failed client_request_id=%s upstream_request_id=%s image_index=%d image_count=%d reason=no_image_output", clientRequestID, upstreamRequestID, imageIndex, count)
+			if len(allResults) > 0 {
+				return writePartialResponse(imageIndex, "no_image_output")
+			}
+			return nil, fmt.Errorf("upstream did not return image output")
+		}
+		if resultCreatedAt > 0 && createdAt == 0 {
+			createdAt = resultCreatedAt
+		}
+		if strings.TrimSpace(firstMeta.Model) == "" {
+			firstMeta = resultFirstMeta
+			if strings.TrimSpace(firstMeta.Model) == "" {
+				firstMeta.Model = strings.TrimSpace(requestModel)
+			}
+		}
+		for _, img := range results {
+			logOpenAIImagesMemorySnapshot(storageCfg.DebugMemorySnapshots, "split_before_decode", requestID, imageIndex, count)
+			normalized := normalizeOpenAIImageBase64(img.Result)
+			if normalized == "" {
+				logger.LegacyPrintf("service.openai_gateway", "[OpenAI] Images split failed client_request_id=%s upstream_request_id=%s image_index=%d image_count=%d reason=invalid_base64", clientRequestID, upstreamRequestID, imageIndex, count)
+				if len(allResults) > 0 {
+					return writePartialResponse(imageIndex, "invalid_base64")
+				}
+				return nil, fmt.Errorf("invalid image result base64")
+			}
+			data, err := base64.StdEncoding.DecodeString(normalized)
+			if err != nil {
+				logger.LegacyPrintf("service.openai_gateway", "[OpenAI] Images split failed client_request_id=%s upstream_request_id=%s image_index=%d image_count=%d reason=decode_error message=%s", clientRequestID, upstreamRequestID, imageIndex, count, err.Error())
+				if len(allResults) > 0 {
+					return writePartialResponse(imageIndex, err.Error())
+				}
+				return nil, err
+			}
+			logOpenAIImagesMemorySnapshot(storageCfg.DebugMemorySnapshots, "split_after_decode", requestID, imageIndex, count)
+			storedURL, err := uploadImageResultBytesFunc(ctx, storageCfg, data, openAIImageOutputMIMEType(img.OutputFormat))
+			data = nil
+			if err != nil {
+				logger.LegacyPrintf("service.openai_gateway", "[OpenAI] Images split failed client_request_id=%s upstream_request_id=%s image_index=%d image_count=%d reason=upload_error message=%s", clientRequestID, upstreamRequestID, imageIndex, count, err.Error())
+				if len(allResults) > 0 {
+					return writePartialResponse(imageIndex, err.Error())
+				}
+				return nil, err
+			}
+			img.URL = storedURL
+			img.Result = ""
+			if len(allResults) < count {
+				allResults = append(allResults, img)
+			}
+			ObserveImageGenerationSingleImageDuration(time.Since(imageStartedAt).Seconds())
+			logOpenAIImagesMemorySnapshot(storageCfg.DebugMemorySnapshots, "split_after_upload", requestID, imageIndex, count)
+		}
+		logger.LegacyPrintf("service.openai_gateway", "[OpenAI] Images split success client_request_id=%s upstream_request_id=%s image_index=%d image_count=%d returned_images=%d", clientRequestID, upstreamRequestID, imageIndex, count, len(allResults))
+		imageOutputSizes = append(imageOutputSizes, openAIResponsesImageResultSizes(results)...)
+	}
+	logOpenAIImagesMemorySnapshot(storageCfg.DebugMemorySnapshots, "split_before_response", requestID, count, count)
+
+	responseBody, err := buildOpenAIImagesAPIResponse(allResults, createdAt, openAIUsageToRawJSON(usage), firstMeta, "url")
+	if err != nil {
+		return nil, err
+	}
+	responseheaders.WriteFilteredHeaders(c.Writer.Header(), responseHeaders, s.responseHeaderFilter)
+	c.Data(statusCode, "application/json; charset=utf-8", responseBody)
+	return &OpenAIForwardResult{
+		RequestID:             requestID,
+		Usage:                 usage,
+		Model:                 requestModel,
+		UpstreamModel:         requestModel,
+		Stream:                false,
+		ResponseHeaders:       responseHeaders,
+		Duration:              time.Since(startTime),
+		ImageCount:            len(allResults),
+		ImageDurationObserved: true,
+		ImageSize:             parsed.SizeTier,
+		ImageInputSize:        parsed.Size,
+		ImageOutputSizes:      imageOutputSizes,
+	}, nil
+}
+
+func addOpenAIUsage(dst *OpenAIUsage, src OpenAIUsage) {
+	if dst == nil {
+		return
+	}
+	dst.InputTokens += src.InputTokens
+	dst.ImageInputTokens += src.ImageInputTokens
+	dst.OutputTokens += src.OutputTokens
+	dst.CacheCreationInputTokens += src.CacheCreationInputTokens
+	dst.CacheReadInputTokens += src.CacheReadInputTokens
+	dst.ImageOutputTokens += src.ImageOutputTokens
 }
 
 func (s *OpenAIGatewayService) handleOpenAIImagesOAuthStreamingResponse(
@@ -1356,6 +1667,9 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesOAuth(
 	token, _, err := s.GetAccessToken(upstreamCtx, account)
 	if err != nil {
 		return nil, err
+	}
+	if s.shouldSplitOpenAIImagesOAuthStorageRequest(parsed) {
+		return s.forwardOpenAIImagesOAuthSplitStorage(upstreamCtx, c, account, token, parsed, requestModel, startTime)
 	}
 
 	responsesBody, err := buildOpenAIImagesResponsesRequest(parsed, requestModel)

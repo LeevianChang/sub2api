@@ -238,20 +238,21 @@ type OpenAIForwardResult struct {
 	ServiceTier *string
 	// ReasoningEffort is extracted from request body (reasoning.effort) or derived from model suffix.
 	// Stored for usage records display; nil means not provided / not applicable.
-	ReasoningEffort    *string
-	Stream             bool
-	OpenAIWSMode       bool
-	ResponseHeaders    http.Header
-	Duration           time.Duration
-	FirstTokenMs       *int
-	ClientDisconnect   bool
-	ImageCount         int
-	ImageSize          string
-	ImageInputSize     string
-	ImageOutputSize    string
-	ImageOutputSizes   []string
-	ImageSizeSource    string
-	ImageSizeBreakdown map[string]int
+	ReasoningEffort       *string
+	Stream                bool
+	OpenAIWSMode          bool
+	ResponseHeaders       http.Header
+	Duration              time.Duration
+	FirstTokenMs          *int
+	ClientDisconnect      bool
+	ImageCount            int
+	ImageSize             string
+	ImageInputSize        string
+	ImageOutputSize       string
+	ImageOutputSizes      []string
+	ImageSizeSource       string
+	ImageSizeBreakdown    map[string]int
+	ImageDurationObserved bool
 
 	wsReplayInput       []json.RawMessage
 	wsReplayInputExists bool

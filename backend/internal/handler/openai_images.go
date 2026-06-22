@@ -97,6 +97,11 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 	if imageReleaseFunc != nil {
 		defer imageReleaseFunc()
 	}
+	finishImageMetrics := service.StartImageGenerationMetrics(parsed.N)
+	metricsCompletedImages := 0
+	metricsFailed := true
+	metricsImageDurationObserved := false
+	defer func() { finishImageMetrics(metricsCompletedImages, metricsFailed, metricsImageDurationObserved) }()
 
 	if parsed.Multipart {
 		setOpsRequestContext(c, requestModel, parsed.Stream)
@@ -311,11 +316,15 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 			}
 		}
 		if result != nil {
+			metricsCompletedImages = result.ImageCount
+			metricsFailed = false
+			metricsImageDurationObserved = result.ImageDurationObserved
 			if account.Type == service.AccountTypeOAuth {
 				h.gatewayService.UpdateCodexUsageSnapshotFromHeaders(c.Request.Context(), account.ID, result.ResponseHeaders)
 			}
 			h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, true, result.FirstTokenMs)
 		} else {
+			metricsFailed = false
 			h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, true, nil)
 		}
 

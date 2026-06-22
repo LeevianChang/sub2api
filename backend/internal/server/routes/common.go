@@ -3,6 +3,7 @@ package routes
 import (
 	"net/http"
 
+	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
 )
 
@@ -11,6 +12,10 @@ func RegisterCommonRoutes(r *gin.Engine) {
 	// 健康检查
 	r.GET("/health", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"status": "ok"})
+	})
+
+	r.GET("/metrics", func(c *gin.Context) {
+		c.Data(http.StatusOK, "text/plain; version=0.0.4; charset=utf-8", []byte(service.PrometheusMetricsText()))
 	})
 
 	// Claude Code 遥测日志（忽略，直接返回200）

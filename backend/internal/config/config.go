@@ -677,6 +677,20 @@ type ImageConcurrencyConfig struct {
 	WaitTimeoutSeconds int `mapstructure:"wait_timeout_seconds"`
 	// MaxWaitingRequests: overflow_mode=wait 时当前进程允许排队等待的图片请求数
 	MaxWaitingRequests int `mapstructure:"max_waiting_requests"`
+	// RetryAfterSeconds: 图片并发满载时返回给调用方的建议重试等待秒数
+	RetryAfterSeconds int `mapstructure:"retry_after_seconds"`
+}
+
+type ImageResultStorageConfig struct {
+	Enabled              bool   `mapstructure:"enabled"`
+	AccountID            string `mapstructure:"account_id"`
+	AccessKeyID          string `mapstructure:"access_key_id"`
+	SecretAccessKey      string `mapstructure:"secret_access_key"`
+	Bucket               string `mapstructure:"bucket"`
+	PublicBaseURL        string `mapstructure:"public_base_url"`
+	ObjectPrefix         string `mapstructure:"object_prefix"`
+	ExpireSeconds        int    `mapstructure:"expire_seconds"`
+	DebugMemorySnapshots bool   `mapstructure:"debug_memory_snapshots"`
 }
 
 const (
@@ -725,6 +739,8 @@ type GatewayConfig struct {
 	OpenAIHTTP2 GatewayOpenAIHTTP2Config `mapstructure:"openai_http2"`
 	// ImageConcurrency: 图片生成独立并发限制配置（默认关闭）
 	ImageConcurrency ImageConcurrencyConfig `mapstructure:"image_concurrency"`
+	// ImageResultStorage: 图片结果上传与 URL 重写配置（默认关闭）
+	ImageResultStorage ImageResultStorageConfig `mapstructure:"image_result_storage"`
 
 	// HTTP 上游连接池配置（性能优化：支持高并发场景调优）
 	// MaxIdleConns: 所有主机的最大空闲连接总数
@@ -1881,6 +1897,16 @@ func setDefaults() {
 	viper.SetDefault("gateway.image_concurrency.overflow_mode", ImageConcurrencyOverflowModeReject)
 	viper.SetDefault("gateway.image_concurrency.wait_timeout_seconds", 30)
 	viper.SetDefault("gateway.image_concurrency.max_waiting_requests", 100)
+	viper.SetDefault("gateway.image_concurrency.retry_after_seconds", 5)
+	viper.SetDefault("gateway.image_result_storage.enabled", false)
+	viper.SetDefault("gateway.image_result_storage.account_id", "")
+	viper.SetDefault("gateway.image_result_storage.access_key_id", "")
+	viper.SetDefault("gateway.image_result_storage.secret_access_key", "")
+	viper.SetDefault("gateway.image_result_storage.bucket", "")
+	viper.SetDefault("gateway.image_result_storage.public_base_url", "")
+	viper.SetDefault("gateway.image_result_storage.object_prefix", "image-results")
+	viper.SetDefault("gateway.image_result_storage.expire_seconds", 604800)
+	viper.SetDefault("gateway.image_result_storage.debug_memory_snapshots", false)
 	viper.SetDefault("gateway.antigravity_fallback_cooldown_minutes", 1)
 	viper.SetDefault("gateway.antigravity_extra_retries", 10)
 	viper.SetDefault("gateway.max_body_size", int64(256*1024*1024))
@@ -2471,6 +2497,29 @@ func (c *Config) Validate() error {
 	}
 	if c.Gateway.ImageConcurrency.MaxWaitingRequests < 0 {
 		return fmt.Errorf("gateway.image_concurrency.max_waiting_requests must be non-negative")
+	}
+	if c.Gateway.ImageConcurrency.RetryAfterSeconds < 0 {
+		return fmt.Errorf("gateway.image_concurrency.retry_after_seconds must be non-negative")
+	}
+	if c.Gateway.ImageResultStorage.Enabled {
+		if strings.TrimSpace(c.Gateway.ImageResultStorage.AccountID) == "" {
+			return fmt.Errorf("gateway.image_result_storage.account_id is required when enabled=true")
+		}
+		if strings.TrimSpace(c.Gateway.ImageResultStorage.AccessKeyID) == "" {
+			return fmt.Errorf("gateway.image_result_storage.access_key_id is required when enabled=true")
+		}
+		if strings.TrimSpace(c.Gateway.ImageResultStorage.SecretAccessKey) == "" {
+			return fmt.Errorf("gateway.image_result_storage.secret_access_key is required when enabled=true")
+		}
+		if strings.TrimSpace(c.Gateway.ImageResultStorage.Bucket) == "" {
+			return fmt.Errorf("gateway.image_result_storage.bucket is required when enabled=true")
+		}
+		if strings.TrimSpace(c.Gateway.ImageResultStorage.PublicBaseURL) == "" {
+			return fmt.Errorf("gateway.image_result_storage.public_base_url is required when enabled=true")
+		}
+	}
+	if c.Gateway.ImageResultStorage.ExpireSeconds < 0 {
+		return fmt.Errorf("gateway.image_result_storage.expire_seconds must be non-negative")
 	}
 	if c.Gateway.MaxIdleConns <= 0 {
 		return fmt.Errorf("gateway.max_idle_conns must be positive")
